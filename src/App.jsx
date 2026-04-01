@@ -29,8 +29,15 @@ async function apiPost(body) {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  const data = await res.json();
+  const text = await res.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error("Server returned an invalid response. It may be overloaded — try again in a moment.");
+  }
   if (data.error) throw new Error(data.error);
+  if (!data.result) throw new Error("No result returned. Try again.");
   return data.result;
 }
 
