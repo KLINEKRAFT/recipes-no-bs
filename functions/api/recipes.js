@@ -70,7 +70,10 @@ Return ONLY the JSON.`;
       body: JSON.stringify({
         model: "claude-haiku-4-5-20251001",
         max_tokens: 8192,
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
+        tools: [
+          { type: "web_search_20250305", name: "web_search" },
+          { type: "web_fetch_20250910", name: "web_fetch", max_uses: 5 },
+        ],
         messages: [{ role: "user", content: prompt }],
       }),
     });
