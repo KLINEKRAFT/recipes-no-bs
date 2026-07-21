@@ -31,6 +31,134 @@ function printRecipe(data, url) {
   w.document.close(); w.focus(); w.print();
 }
 
+// Render the recipe as a tall, phone-proportioned PNG that saves to the camera
+// roll — big single-column type, checkable ingredient bullets, numbered steps.
+// Sized 1080px wide so it fills any iPhone/Android screen and stays legible at
+// the stove. Dependency-free: everything is drawn on a <canvas>.
+function exportRecipeCard(data, url) {
+  const W = 1080, PAD = 72, ACC = "#6ea4c4";
+  const contentW = W - PAD * 2;
+  const SANS = "Helvetica, Arial, sans-serif";
+  const isSection = (s) => s && s.startsWith("**") && s.endsWith("**");
+
+  // Single layout routine used twice: once to measure total height, once to
+  // draw. `draw` gates the actual paint calls; measureText runs in both passes
+  // so wrapping is identical.
+  function layout(ctx, draw) {
+    let y = PAD;
+    ctx.textBaseline = "top";
+
+    const wrap = (text, x, maxW, font, color, lh, tracking) => {
+      ctx.font = font;
+      if ("letterSpacing" in ctx) ctx.letterSpacing = (tracking || 0) + "px";
+      const flush = (str) => { if (draw) { ctx.fillStyle = color; ctx.fillText(str, x, y); } y += lh; };
+      let ln = "";
+      for (const word of String(text).split(/\s+/).filter(Boolean)) {
+        // Hard-break a single token wider than the column (e.g. a long URL).
+        if (ctx.measureText(word).width > maxW) {
+          if (ln) { flush(ln); ln = ""; }
+          let chunk = "";
+          for (const ch of word) {
+            if (chunk && ctx.measureText(chunk + ch).width > maxW) { flush(chunk); chunk = ch; }
+            else chunk += ch;
+          }
+          ln = chunk;
+          continue;
+        }
+        const t = ln ? ln + " " + word : word;
+        if (ln && ctx.measureText(t).width > maxW) { flush(ln); ln = word; }
+        else ln = t;
+      }
+      if (ln) flush(ln);
+      if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
+    };
+
+    if (draw) { ctx.fillStyle = ACC; ctx.fillRect(0, 0, W, 14); }
+
+    if (data.source) {
+      wrap(String(data.source).toUpperCase(), PAD, contentW, "600 24px " + SANS, ACC, 34, 3);
+      y += 8;
+    }
+    wrap(String(data.title || "Recipe").toUpperCase(), PAD, contentW, "700 66px " + SANS, "#111", 74, -1);
+    y += 18;
+    if (draw) { ctx.fillStyle = "#111"; ctx.fillRect(PAD, y, contentW, 4); }
+    y += 4 + 28;
+
+    const meta = [["PREP", data.prep_time], ["COOK", data.cook_time], ["TOTAL", data.total_time], ["SERVES", data.servings]]
+      .filter(m => m[1]).map(m => m[0] + " " + m[1]).join("      ");
+    if (meta) { wrap(meta, PAD, contentW, "600 27px " + SANS, "#555", 40, 1); y += 34; }
+
+    wrap("INGREDIENTS", PAD, contentW, "700 26px " + SANS, ACC, 38, 3);
+    y += 16;
+    for (const ing of (data.ingredients || [])) {
+      if (isSection(ing)) {
+        y += 12;
+        wrap(ing.replace(/\*\*/g, "").toUpperCase(), PAD, contentW, "700 24px " + SANS, ACC, 34, 2);
+        y += 6;
+      } else {
+        if (draw) { ctx.strokeStyle = ACC; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(PAD + 9, y + 17, 9, 0, Math.PI * 2); ctx.stroke(); }
+        wrap(ing, PAD + 40, contentW - 40, "400 30px " + SANS, "#222", 44, 0);
+        y += 12;
+      }
+    }
+    y += 34;
+
+    wrap("METHOD", PAD, contentW, "700 26px " + SANS, ACC, 38, 3);
+    y += 16;
+    (data.steps || []).forEach((step, i) => {
+      const top = y;
+      wrap(step, PAD + 72, contentW - 72, "400 30px " + SANS, "#222", 46, 0);
+      if (draw) {
+        ctx.fillStyle = "#ccc";
+        ctx.font = "600 26px " + SANS;
+        if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
+        ctx.fillText(String(i + 1).padStart(2, "0"), PAD, top + 3);
+      }
+      y += 26;
+    });
+
+    const notes = data.notes || data.tips;
+    if (notes) {
+      y += 30;
+      const nStart = y;
+      wrap("NOTES", PAD + 30, contentW - 30, "700 24px " + SANS, ACC, 34, 2);
+      y += 6;
+      wrap(notes, PAD + 30, contentW - 30, "400 27px " + SANS, "#555", 40, 0);
+      if (draw) { ctx.fillStyle = ACC; ctx.fillRect(PAD, nStart, 5, y - nStart); }
+    }
+
+    y += 54;
+    if (draw) { ctx.fillStyle = "#eee"; ctx.fillRect(PAD, y, contentW, 2); }
+    y += 24;
+    wrap("RECIPES WITH NO BULLSHIT", PAD, contentW, "600 20px " + SANS, "#bbb", 28, 2);
+    if (url) { y += 2; wrap(url, PAD, contentW, "400 18px " + SANS, "#ccc", 26, 0); }
+
+    return y;
+  }
+
+  const totalH = Math.ceil(layout(document.createElement("canvas").getContext("2d"), false)) + PAD;
+  const canvas = document.createElement("canvas");
+  canvas.width = W;
+  canvas.height = totalH;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, W, totalH);
+  layout(ctx, true);
+
+  const slug = String(data.title || "recipe").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50) || "recipe";
+  canvas.toBlob((blob) => {
+    if (!blob) return;
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = href;
+    a.download = slug + "-card.png";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(href), 1000);
+  }, "image/png");
+}
+
 function Detail({ data, url, onClear }) {
   const isSection = (s) => s && s.startsWith("**") && s.endsWith("**");
   return (
@@ -42,11 +170,19 @@ function Detail({ data, url, onClear }) {
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="19" y1="12" x2="5" y2="12" /><polyline points="12 19 5 12 12 5" /></svg>
           Strip another
         </button>
-        <button onClick={() => printRecipe(data, url)} style={{ background: "none", border: "1px solid #e5e5e5", padding: "6px 14px", fontFamily: M, fontSize: 8, textTransform: "uppercase", letterSpacing: "0.06em", cursor: "pointer", color: "#999" }}
-          onMouseEnter={e => { e.target.style.color = ACC; e.target.style.borderColor = ACC }}
-          onMouseLeave={e => { e.target.style.color = "#999"; e.target.style.borderColor = "#e5e5e5" }}>
-          Print / PDF
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={() => exportRecipeCard(data, url)} style={{ background: ACC, border: "1px solid " + ACC, padding: "6px 14px", fontFamily: M, fontSize: 8, textTransform: "uppercase", letterSpacing: "0.06em", cursor: "pointer", color: "#fff" }}
+            onMouseEnter={e => { e.target.style.opacity = "0.85" }}
+            onMouseLeave={e => { e.target.style.opacity = "1" }}
+            title="Save a phone-sized recipe card to your photos">
+            Save card
+          </button>
+          <button onClick={() => printRecipe(data, url)} style={{ background: "none", border: "1px solid #e5e5e5", padding: "6px 14px", fontFamily: M, fontSize: 8, textTransform: "uppercase", letterSpacing: "0.06em", cursor: "pointer", color: "#999" }}
+            onMouseEnter={e => { e.target.style.color = ACC; e.target.style.borderColor = ACC }}
+            onMouseLeave={e => { e.target.style.color = "#999"; e.target.style.borderColor = "#e5e5e5" }}>
+            Print / PDF
+          </button>
+        </div>
       </div>
 
       {/* Source */}
