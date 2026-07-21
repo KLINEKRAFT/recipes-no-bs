@@ -1,0 +1,12 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Lockfile (not tracked by this project)
+package-lock.json
+
+# Logs & OS cruft
+*.log
+.DS_Store
