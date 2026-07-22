@@ -4,6 +4,12 @@ const ACC = "#6ea4c4";
 const F = "'Helvetica Neue', Helvetica, Arial, sans-serif";
 const M = "'IBM Plex Mono', 'Courier New', monospace";
 
+// ── Editorial recipe-card palette (shared by print + phone export) ──────────
+// Olive-green + ink on white, tomato-red temperature badges — the printable
+// card look. Kept separate from the app's on-screen accent (ACC) on purpose.
+const GRN = "#4a5d23", INK = "#1a1a1a", MUT = "#9a988c", RED = "#c1442e";
+const CARDFONT = "'Helvetica Neue', Helvetica, Arial, sans-serif";
+
 async function apiPost(body) {
   const res = await fetch("/api/recipes", {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -18,131 +24,383 @@ async function apiPost(body) {
   return data.result;
 }
 
-function printRecipe(data, url) {
-  const w = window.open("", "_blank");
-  const meta = [data.prep_time && "PREP: " + data.prep_time, data.cook_time && "COOK: " + data.cook_time, data.total_time && "TOTAL: " + data.total_time, data.servings && "SERVES: " + data.servings].filter(Boolean).join("  /  ");
-  const isSection = (s) => s.startsWith("**") && s.endsWith("**");
-  const ingHtml = (data.ingredients || []).map(i => {
-    if (isSection(i)) return '<div style="font-weight:600;text-transform:uppercase;letter-spacing:0.08em;font-size:10px;color:#6ea4c4;margin-top:16px;margin-bottom:6px;font-family:\'Courier New\',monospace">' + i.replace(/\*\*/g, "") + '</div>';
-    return '<div style="padding:5px 0;border-bottom:1px solid #f0f0f0;font-size:13px">' + i + '</div>';
-  }).join("");
-  const stepsHtml = (data.steps || []).map((s, i) => '<div style="display:flex;gap:12px;margin-bottom:14px"><span style="font-family:\'Courier New\',monospace;font-size:10px;color:#bbb;min-width:20px;padding-top:2px">' + String(i + 1).padStart(2, "0") + '</span><span style="font-size:13px;line-height:1.6">' + s + '</span></div>').join("");
-  w.document.write(`<!DOCTYPE html><html><head><title>${data.title}</title><style>@page{margin:0.6in}body{font-family:'Helvetica Neue',Helvetica,sans-serif;color:#111;margin:0;padding:0}.t{font-size:24px;font-weight:700;text-transform:uppercase;letter-spacing:-0.02em;margin-bottom:8px}.m{font-size:10px;color:#888;text-transform:uppercase;letter-spacing:0.08em;font-family:'Courier New',monospace;margin-bottom:24px;padding-bottom:16px;border-bottom:1px solid #eee}.cols{display:flex;gap:32px}.cl{flex:0 0 38%}.cr{flex:1}.sl{font-family:'Courier New',monospace;font-size:9px;text-transform:uppercase;letter-spacing:0.12em;color:#6ea4c4;font-weight:600;margin-bottom:12px}.notes{margin-top:24px;padding:12px;background:#f8f7f5;font-size:12px;color:#888;line-height:1.5}</style></head><body><div class="t">${data.title}</div><div class="m">${meta}</div><div class="cols"><div class="cl"><div class="sl">Ingredients</div>${ingHtml}</div><div class="cr"><div class="sl">Method</div>${stepsHtml}</div></div>${(data.notes || data.tips) ? '<div class="notes">' + (data.notes || data.tips) + '</div>' : ""}</body></html>`);
-  w.document.close(); w.focus(); w.print();
+const SECT = (s) => typeof s === "string" && s.startsWith("**") && s.endsWith("**");
+
+// Leading quantity (number/fraction + optional unit) to render bold.
+const FRAC = "0-9\\u00BC-\\u00BE\\u2150-\\u215E";
+const QTY_RE = new RegExp(
+  "^([" + FRAC + "./+\\-\\u2013\\s]*[" + FRAC + "][" + FRAC + "./+\\-\\u2013]*\\s*" +
+  "(?:(?:tbsp|tablespoons?|tsp|teaspoons?|cups?|oz|ounces?|lbs?|pounds?|g|grams?|kg|ml|l|" +
+  "cloves?|cans?|sticks?|pinch(?:es)?|slices?|sprigs?|bunch(?:es)?|handfuls?)\\b)?\\.?)",
+  "i"
+);
+// Cooking temperatures to highlight as a red badge.
+const TEMP_RE = /(\d{2,3}\s?°\s?[FC]?|\d{2,3}\s?degrees(?:\s?[FC])?)/gi;
+
+// Break an ingredient into styled segments: b = bold quantity, n = normal,
+// m = muted qualifier (parentheticals + anything after the first comma).
+function parseIng(str) {
+  const out = [];
+  let main = String(str), tail = "";
+  const c = main.indexOf(",");
+  if (c !== -1) { tail = main.slice(c); main = main.slice(0, c); }
+  const m = main.match(QTY_RE);
+  let rest = main;
+  if (m && m[0].trim()) { out.push({ t: m[0].trim(), k: "b" }); rest = main.slice(m[0].length); }
+  if (out.length && rest && !/^\s/.test(rest)) rest = " " + rest;
+  let idx = 0, pm; const P = /\(([^)]*)\)/g;
+  while ((pm = P.exec(rest))) {
+    if (pm.index > idx) out.push({ t: rest.slice(idx, pm.index), k: "n" });
+    out.push({ t: pm[0], k: "m" });
+    idx = pm.index + pm[0].length;
+  }
+  if (idx < rest.length) out.push({ t: rest.slice(idx), k: "n" });
+  if (tail) out.push({ t: tail, k: "m" });
+  return out.filter(r => r.t !== "");
 }
 
-// Render the recipe as a tall, phone-proportioned PNG that saves to the camera
-// roll — big single-column type, checkable ingredient bullets, numbered steps.
-// Sized 1080px wide so it fills any iPhone/Android screen and stays legible at
-// the stove. Dependency-free: everything is drawn on a <canvas>.
-function exportRecipeCard(data, url) {
-  const W = 1080, PAD = 72, ACC = "#6ea4c4";
-  const contentW = W - PAD * 2;
-  const SANS = "Helvetica, Arial, sans-serif";
-  const isSection = (s) => s && s.startsWith("**") && s.endsWith("**");
+// Break a step into normal text + red temperature badges.
+function parseStep(str) {
+  const out = []; let idx = 0, m; TEMP_RE.lastIndex = 0;
+  const s = String(str);
+  while ((m = TEMP_RE.exec(s))) {
+    if (m.index > idx) out.push({ t: s.slice(idx, m.index), k: "n" });
+    out.push({ t: m[0].replace(/\s+/g, ""), k: "badge" });
+    idx = m.index + m[0].length;
+  }
+  if (idx < s.length) out.push({ t: s.slice(idx), k: "n" });
+  return out;
+}
 
-  // Single layout routine used twice: once to measure total height, once to
-  // draw. `draw` gates the actual paint calls; measureText runs in both passes
-  // so wrapping is identical.
+// Split "15 minutes" → ["15", "minutes"] for the stat row.
+function splitStat(v) {
+  const s = String(v).trim();
+  const m = s.match(new RegExp("^([" + FRAC + "][" + FRAC + ".:/\\-\\u2013]*[" + FRAC + "]|[" + FRAC + "])\\s*(.*)$"));
+  return m ? [m[1].trim(), m[2].trim()] : [s, ""];
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+// Split a title's words in half so the back half renders green (the two-tone
+// display look). Single-word titles stay all-ink.
+function titleParts(t) {
+  const words = String(t || "Recipe").trim().split(/\s+/);
+  const cut = Math.ceil(words.length / 2);
+  return [words.slice(0, cut).join(" "), words.slice(cut).join(" ")];
+}
+
+// ── Print: an editorial recipe sheet on white, PDF-ready ────────────────────
+function printRecipe(data, url) {
+  const w = window.open("", "_blank");
+  if (!w) return;
+
+  const seg = (arr) => arr.map(r =>
+    r.k === "b" ? "<strong>" + escapeHtml(r.t) + "</strong>"
+      : r.k === "m" ? '<span class="m">' + escapeHtml(r.t) + "</span>"
+        : r.k === "badge" ? '<span class="badge">' + escapeHtml(r.t) + "</span>"
+          : escapeHtml(r.t)
+  ).join("");
+
+  const [tA, tB] = titleParts(data.title);
+  const titleHtml = escapeHtml(tA) + (tB ? ' <span class="g">' + escapeHtml(tB) + "</span>" : "");
+
+  const eyebrow = [data.source, data.servings && ("Serves " + data.servings)]
+    .filter(Boolean).map(x => escapeHtml(String(x))).join(" &middot; ");
+
+  const stats = [["Prep", data.prep_time], ["Cook", data.cook_time], ["Total", data.total_time], ["Serves", data.servings]]
+    .filter(s => s[1]).map(([l, v]) => {
+      const [val, unit] = splitStat(v);
+      return '<div class="stat"><div class="l">' + l + '</div><div class="v">' + escapeHtml(val) + '</div><div class="u">' + escapeHtml(unit) + "</div></div>";
+    }).join("");
+
+  const ings = (data.ingredients || []).map(i => {
+    if (SECT(i)) return '<div class="ing sec"><span class="h">' + escapeHtml(i.replace(/\*\*/g, "")) + "</span></div>";
+    return '<div class="ing"><span class="box"></span><span class="tx">' + seg(parseIng(i)) + "</span></div>";
+  }).join("");
+
+  const steps = (data.steps || []).map((s, i) =>
+    '<div class="step"><div class="num">' + String(i + 1).padStart(2, "0") + '</div><div class="body">' + seg(parseStep(s)) + "</div></div>"
+  ).join("");
+
+  const notes = (data.notes || data.tips)
+    ? '<div class="notes"><div class="h">Notes</div><p>' + escapeHtml(data.notes || data.tips) + "</p></div>" : "";
+
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(data.title || "Recipe")}</title><style>
+@page{margin:.5in}
+*{box-sizing:border-box}
+html,body{background:#fff}
+body{font-family:${CARDFONT};color:${INK};margin:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.wrap{max-width:7.3in;margin:0 auto;padding:.1in 0}
+.eyebrow{color:${GRN};font-weight:700;font-size:11px;letter-spacing:.16em;text-transform:uppercase;margin-bottom:10px}
+.title{font-weight:800;text-transform:uppercase;font-size:58px;line-height:.9;letter-spacing:-.02em;margin:0 0 22px}
+.title .g{color:${GRN}}
+.stats{display:flex;border-top:3px solid ${INK};border-bottom:1px solid #ddd;margin-bottom:34px}
+.stat{flex:1;padding:13px 0 13px 16px;border-left:1px solid #e7e7e7}
+.stat:first-child{border-left:none;padding-left:0}
+.stat .l{color:${GRN};font-weight:700;font-size:10px;letter-spacing:.1em;text-transform:uppercase}
+.stat .v{font-weight:800;font-size:22px;margin:4px 0 2px}
+.stat .u{color:#a3a196;font-size:11px}
+.sechead{display:flex;align-items:baseline;justify-content:space-between;border-bottom:3px solid ${INK};padding-bottom:7px;margin:0 0 18px}
+.sechead h2{font-weight:800;text-transform:uppercase;font-size:32px;letter-spacing:-.01em;margin:0}
+.sechead .r{color:#a3a196;font-weight:700;font-size:11px;letter-spacing:.14em;text-transform:uppercase}
+.ings{display:grid;grid-template-columns:1fr 1fr;gap:0 44px;margin-bottom:38px}
+.ing{display:flex;gap:12px;padding:13px 0;border-bottom:1px solid #eee;font-size:14.5px;line-height:1.35;break-inside:avoid;align-items:flex-start}
+.box{flex:none;width:17px;height:17px;border:2px solid ${GRN};border-radius:3px;margin-top:2px}
+.ing strong{font-weight:800}
+.ing .m{color:#a3a196}
+.ing.sec{grid-column:1/-1;border:none;padding:16px 0 2px}
+.ing.sec .h{color:${GRN};font-weight:800;font-size:12px;letter-spacing:.12em;text-transform:uppercase}
+.step{display:flex;gap:18px;margin-bottom:24px;break-inside:avoid}
+.num{color:${GRN};font-weight:800;font-size:44px;line-height:.8;flex:none;width:74px}
+.body{font-size:14.5px;line-height:1.5;padding-top:6px}
+.badge{background:${RED};color:#fff;font-weight:700;font-size:.82em;padding:1px 7px;border-radius:3px;white-space:nowrap}
+.notes{border-left:4px solid ${GRN};background:#f6f6f0;padding:15px 20px;margin-top:16px;break-inside:avoid}
+.notes .h{color:${GRN};font-weight:800;font-size:12px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:7px}
+.notes p{color:#6c6a60;font-size:13.5px;line-height:1.55;margin:0}
+.foot{margin-top:32px;border-top:1px solid #e7e7e7;padding-top:12px;display:flex;justify-content:space-between;gap:16px;color:#b7b5aa;font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-weight:700}
+.foot .u{text-transform:none;letter-spacing:0;font-weight:400;word-break:break-all}
+</style></head><body><div class="wrap">
+${eyebrow ? '<div class="eyebrow">' + eyebrow + "</div>" : ""}
+<h1 class="title">${titleHtml}</h1>
+${stats ? '<div class="stats">' + stats + "</div>" : ""}
+<div class="sechead"><h2>Ingredients</h2><span class="r">Gather first</span></div>
+<div class="ings">${ings}</div>
+<div class="sechead"><h2>Method</h2><span class="r">Step by step</span></div>
+<div class="steps">${steps}</div>
+${notes}
+<div class="foot"><span>Recipes with no bullshit</span><span class="u">${escapeHtml(url || "")}</span></div>
+</div></body></html>`);
+  w.document.close(); w.focus();
+  setTimeout(() => { try { w.print(); } catch (e) { /* user can print manually */ } }, 250);
+}
+
+// ── Canvas primitives for the phone card ────────────────────────────────────
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// Lay styled runs into a column with word-wrap; returns the y after the block.
+// Each run: {t, font, color, track?, badge?, size?}. Paints only when draw is
+// true; the returned geometry is identical whether or not it paints, so the
+// same routine measures (pass 1) and draws (pass 2).
+function drawRuns(ctx, runs, x, y, maxW, lineH, draw) {
+  ctx.textBaseline = "top";
+  let cx = x, started = false;
+  const nl = () => { y += lineH; cx = x; started = false; };
+  for (const run of runs) {
+    const track = run.track || 0;
+    ctx.font = run.font;
+    if ("letterSpacing" in ctx) ctx.letterSpacing = track + "px";
+    if (run.badge) {
+      const padX = 11, tw = ctx.measureText(run.t).width, bw = tw + padX * 2, sz = run.size || 26;
+      if (started && cx + bw > x + maxW) nl();
+      if (draw) {
+        roundRect(ctx, cx, y - 3, bw, sz + 8, 4);
+        ctx.fillStyle = RED; ctx.fill();
+        ctx.fillStyle = "#fff"; ctx.font = run.font;
+        if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
+        ctx.fillText(run.t, cx + padX, y + 1);
+      }
+      cx += bw + 6; started = true;
+      continue;
+    }
+    for (const tok of run.t.split(/(\s+)/)) {
+      if (!tok) continue;
+      if (/^\s+$/.test(tok)) { if (started) cx += ctx.measureText(" ").width; continue; }
+      const w = ctx.measureText(tok).width;
+      if (w > maxW) { // hard-break a token wider than the column (e.g. a URL)
+        if (started) nl();
+        let chunk = "";
+        for (const ch of tok) {
+          if (chunk && ctx.measureText(chunk + ch).width > maxW) {
+            if (draw) { ctx.fillStyle = run.color; ctx.fillText(chunk, cx, y); }
+            nl(); chunk = ch;
+          } else chunk += ch;
+        }
+        if (chunk) { if (draw) { ctx.fillStyle = run.color; ctx.fillText(chunk, cx, y); } cx += ctx.measureText(chunk).width; started = true; }
+        continue;
+      }
+      if (started && cx + w > x + maxW) nl();
+      if (draw) { ctx.fillStyle = run.color; ctx.fillText(tok, cx, y); }
+      cx += w; started = true;
+    }
+  }
+  if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
+  return y + lineH;
+}
+
+// ── Phone card: a tall PNG that matches the print sheet, saved to the camera
+// roll. 1080px wide so it fills any iPhone/Android screen and stays legible at
+// the stove. Dependency-free: everything is drawn on a <canvas>. ─────────────
+function exportRecipeCard(data, url) {
+  const W = 1080, PAD = 64, contentW = W - PAD * 2, GAP = 44;
+  const colW = (contentW - GAP) / 2;
+  const S = CARDFONT;
+
+  const ingRuns = (segs, size) => segs.map(r => ({
+    t: r.t,
+    font: (r.k === "b" ? "800 " : "400 ") + size + "px " + S,
+    color: r.k === "m" ? MUT : INK,
+  }));
+  const stepRuns = (segs, size) => segs.map(r => r.k === "badge"
+    ? { t: r.t, badge: true, size, font: "800 " + Math.round(size * 0.82) + "px " + S }
+    : { t: r.t, font: "400 " + size + "px " + S, color: INK });
+
+  // One routine, run twice: measure the full height, then paint.
   function layout(ctx, draw) {
     let y = PAD;
     ctx.textBaseline = "top";
 
-    const wrap = (text, x, maxW, font, color, lh, tracking) => {
-      ctx.font = font;
-      if ("letterSpacing" in ctx) ctx.letterSpacing = (tracking || 0) + "px";
-      const flush = (str) => { if (draw) { ctx.fillStyle = color; ctx.fillText(str, x, y); } y += lh; };
-      let ln = "";
-      for (const word of String(text).split(/\s+/).filter(Boolean)) {
-        // Hard-break a single token wider than the column (e.g. a long URL).
-        if (ctx.measureText(word).width > maxW) {
-          if (ln) { flush(ln); ln = ""; }
-          let chunk = "";
-          for (const ch of word) {
-            if (chunk && ctx.measureText(chunk + ch).width > maxW) { flush(chunk); chunk = ch; }
-            else chunk += ch;
-          }
-          ln = chunk;
-          continue;
-        }
-        const t = ln ? ln + " " + word : word;
-        if (ln && ctx.measureText(t).width > maxW) { flush(ln); ln = word; }
-        else ln = t;
+    // Eyebrow
+    const eyebrow = [data.source, data.servings && ("SERVES " + data.servings)]
+      .filter(Boolean).join("   ·   ").toUpperCase();
+    if (eyebrow) {
+      y = drawRuns(ctx, [{ t: eyebrow, font: "700 22px " + S, color: GRN, track: 2.5 }], PAD, y, contentW, 32, draw);
+      y += 10;
+    }
+
+    // Title (two-tone: front half ink, back half green)
+    const [tA, tB] = titleParts(data.title);
+    const tRuns = [];
+    if (tA) tRuns.push({ t: tA.toUpperCase() + (tB ? " " : ""), font: "800 76px " + S, color: INK, track: -1 });
+    if (tB) tRuns.push({ t: tB.toUpperCase(), font: "800 76px " + S, color: GRN, track: -1 });
+    y = drawRuns(ctx, tRuns, PAD, y, contentW, 78, draw);
+    y += 26;
+
+    // Stat row
+    const stats = [["PREP", data.prep_time], ["COOK", data.cook_time], ["TOTAL", data.total_time], ["SERVES", data.servings]]
+      .filter(s => s[1]);
+    if (stats.length) {
+      if (draw) { ctx.fillStyle = INK; ctx.fillRect(PAD, y, contentW, 4); }
+      const rowTop = y + 20, cellW = contentW / stats.length;
+      const anyUnit = stats.some(s => splitStat(s[1])[1]);
+      if (draw) {
+        stats.forEach(([l, v], i) => {
+          const [val, unit] = splitStat(v), cx = PAD + i * cellW, inset = i > 0 ? 18 : 0;
+          if (i > 0) { ctx.fillStyle = "#e7e7e7"; ctx.fillRect(cx, rowTop, 1, 78); }
+          ctx.textBaseline = "top";
+          ctx.fillStyle = GRN; ctx.font = "700 19px " + S;
+          if ("letterSpacing" in ctx) ctx.letterSpacing = "1.5px";
+          ctx.fillText(l, cx + inset, rowTop);
+          if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
+          ctx.fillStyle = INK; ctx.font = "800 40px " + S;
+          ctx.fillText(val, cx + inset, rowTop + 26);
+          if (unit) { ctx.fillStyle = MUT; ctx.font = "400 20px " + S; ctx.fillText(unit, cx + inset, rowTop + 74); }
+        });
       }
-      if (ln) flush(ln);
-      if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
+      y = rowTop + (anyUnit ? 104 : 78) + 6;
+      if (draw) { ctx.fillStyle = "#ddd"; ctx.fillRect(PAD, y, contentW, 1); }
+      y += 34;
+    }
+
+    // Section header helper (big ink title + small muted kicker + heavy rule)
+    const sectionHead = (title, kicker) => {
+      if (draw) {
+        ctx.textBaseline = "top"; ctx.fillStyle = INK; ctx.font = "800 46px " + S;
+        if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
+        ctx.fillText(title, PAD, y);
+        ctx.fillStyle = MUT; ctx.font = "700 18px " + S;
+        if ("letterSpacing" in ctx) ctx.letterSpacing = "1.5px";
+        const kw = ctx.measureText(kicker).width;
+        ctx.fillText(kicker, PAD + contentW - kw, y + 22);
+        if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
+      }
+      y += 52;
+      if (draw) { ctx.fillStyle = INK; ctx.fillRect(PAD, y, contentW, 4); }
+      y += 4;
     };
 
-    if (draw) { ctx.fillStyle = ACC; ctx.fillRect(0, 0, W, 14); }
-
-    if (data.source) {
-      wrap(String(data.source).toUpperCase(), PAD, contentW, "600 24px " + SANS, ACC, 34, 3);
-      y += 8;
-    }
-    wrap(String(data.title || "Recipe").toUpperCase(), PAD, contentW, "700 66px " + SANS, "#111", 74, -1);
-    y += 18;
-    if (draw) { ctx.fillStyle = "#111"; ctx.fillRect(PAD, y, contentW, 4); }
-    y += 4 + 28;
-
-    const meta = [["PREP", data.prep_time], ["COOK", data.cook_time], ["TOTAL", data.total_time], ["SERVES", data.servings]]
-      .filter(m => m[1]).map(m => m[0] + " " + m[1]).join("      ");
-    if (meta) { wrap(meta, PAD, contentW, "600 27px " + SANS, "#555", 40, 1); y += 34; }
-
-    wrap("INGREDIENTS", PAD, contentW, "700 26px " + SANS, ACC, 38, 3);
-    y += 16;
-    for (const ing of (data.ingredients || [])) {
-      if (isSection(ing)) {
-        y += 12;
-        wrap(ing.replace(/\*\*/g, "").toUpperCase(), PAD, contentW, "700 24px " + SANS, ACC, 34, 2);
-        y += 6;
-      } else {
-        if (draw) { ctx.strokeStyle = ACC; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(PAD + 9, y + 17, 9, 0, Math.PI * 2); ctx.stroke(); }
-        wrap(ing, PAD + 40, contentW - 40, "400 30px " + SANS, "#222", 44, 0);
-        y += 12;
+    // Ingredients — two-column, row-major, checkbox squares
+    sectionHead("INGREDIENTS", "GATHER FIRST");
+    y += 22;
+    const items = data.ingredients || [];
+    const ingSize = 29, ingLH = 40, boxTop = 3, rowGap = 26;
+    const cell = (segs, cx, yy, doDraw) => {
+      if (doDraw) { ctx.strokeStyle = GRN; ctx.lineWidth = 2.5; roundRect(ctx, cx, yy + boxTop, 22, 22, 4); ctx.stroke(); }
+      return drawRuns(ctx, ingRuns(segs, ingSize), cx + 36, yy, colW - 36, ingLH, doDraw);
+    };
+    let i = 0;
+    while (i < items.length) {
+      if (SECT(items[i])) {
+        y += 10;
+        y = drawRuns(ctx, [{ t: items[i].replace(/\*\*/g, "").toUpperCase(), font: "800 22px " + S, color: GRN, track: 1.5 }], PAD, y, contentW, 32, draw);
+        y += 8; i += 1; continue;
       }
-    }
-    y += 34;
-
-    wrap("METHOD", PAD, contentW, "700 26px " + SANS, ACC, 38, 3);
-    y += 16;
-    (data.steps || []).forEach((step, i) => {
-      const top = y;
-      wrap(step, PAD + 72, contentW - 72, "400 30px " + SANS, "#222", 46, 0);
+      const right = (i + 1 < items.length && !SECT(items[i + 1])) ? items[i + 1] : null;
+      const hL = cell(parseIng(items[i]), PAD, y, false);
+      const hR = right ? cell(parseIng(right), PAD + colW + GAP, y, false) : y;
+      const rowBottom = Math.max(hL, hR);
       if (draw) {
-        ctx.fillStyle = "#ccc";
-        ctx.font = "600 26px " + SANS;
-        if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
-        ctx.fillText(String(i + 1).padStart(2, "0"), PAD, top + 3);
+        cell(parseIng(items[i]), PAD, y, true);
+        if (right) cell(parseIng(right), PAD + colW + GAP, y, true);
+        ctx.fillStyle = "#ededed";
+        ctx.fillRect(PAD, rowBottom + rowGap - 13, colW, 1);
+        if (right) ctx.fillRect(PAD + colW + GAP, rowBottom + rowGap - 13, colW, 1);
       }
-      y += 26;
+      y = rowBottom + rowGap;
+      i += right ? 2 : 1;
+    }
+    y += 26;
+
+    // Method — big green step numbers + wrapped body, temp badges inline
+    sectionHead("METHOD", "STEP BY STEP");
+    y += 30;
+    const numW = 96, stepSize = 30, stepLH = 44;
+    (data.steps || []).forEach((step, idx) => {
+      const top = y;
+      const endY = drawRuns(ctx, stepRuns(parseStep(step), stepSize), PAD + numW, y, contentW - numW, stepLH, draw);
+      if (draw) {
+        ctx.textBaseline = "top"; ctx.fillStyle = GRN; ctx.font = "800 52px " + S;
+        if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
+        ctx.fillText(String(idx + 1).padStart(2, "0"), PAD, top - 2);
+      }
+      y = Math.max(endY, top + 56) + 22;
     });
 
+    // Notes callout
     const notes = data.notes || data.tips;
     if (notes) {
-      y += 30;
-      const nStart = y;
-      wrap("NOTES", PAD + 30, contentW - 30, "700 24px " + SANS, ACC, 34, 2);
-      y += 6;
-      wrap(notes, PAD + 30, contentW - 30, "400 27px " + SANS, "#555", 40, 0);
-      if (draw) { ctx.fillStyle = ACC; ctx.fillRect(PAD, nStart, 5, y - nStart); }
+      y += 8;
+      const nTop = y + 4;
+      let ny = drawRuns(ctx, [{ t: "NOTES", font: "800 22px " + S, color: GRN, track: 1.5 }], PAD + 30, nTop, contentW - 60, 32, draw);
+      ny += 4;
+      ny = drawRuns(ctx, [{ t: notes, font: "400 27px " + S, color: "#6c6a60" }], PAD + 30, ny, contentW - 60, 40, draw);
+      if (draw) { ctx.fillStyle = GRN; ctx.fillRect(PAD, nTop - 6, 5, ny - (nTop - 6) - 6); }
+      y = ny + 12;
     }
 
-    y += 54;
-    if (draw) { ctx.fillStyle = "#eee"; ctx.fillRect(PAD, y, contentW, 2); }
-    y += 24;
-    wrap("RECIPES WITH NO BULLSHIT", PAD, contentW, "600 20px " + SANS, "#bbb", 28, 2);
-    if (url) { y += 2; wrap(url, PAD, contentW, "400 18px " + SANS, "#ccc", 26, 0); }
-
+    // Footer
+    y += 30;
+    if (draw) { ctx.fillStyle = "#e7e7e7"; ctx.fillRect(PAD, y, contentW, 1); }
+    y += 22;
+    if (draw) {
+      ctx.textBaseline = "top"; ctx.fillStyle = MUT; ctx.font = "700 18px " + S;
+      if ("letterSpacing" in ctx) ctx.letterSpacing = "1.5px";
+      ctx.fillText("RECIPES WITH NO BULLSHIT", PAD, y);
+      if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
+      if (url) {
+        ctx.fillStyle = "#c2c0b6"; ctx.font = "400 18px " + S;
+        const uw = ctx.measureText(url).width;
+        if (uw <= contentW * 0.55) ctx.fillText(url, PAD + contentW - uw, y);
+      }
+    }
+    y += 28;
     return y;
   }
 
-  const totalH = Math.ceil(layout(document.createElement("canvas").getContext("2d"), false)) + PAD;
+  const totalH = Math.ceil(layout(document.createElement("canvas").getContext("2d"), false));
   const canvas = document.createElement("canvas");
-  canvas.width = W;
-  canvas.height = totalH;
+  canvas.width = W; canvas.height = totalH;
   const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#fff";
-  ctx.fillRect(0, 0, W, totalH);
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, totalH);
   layout(ctx, true);
 
   const slug = String(data.title || "recipe").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50) || "recipe";
@@ -150,11 +408,8 @@ function exportRecipeCard(data, url) {
     if (!blob) return;
     const href = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = href;
-    a.download = slug + "-card.png";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    a.href = href; a.download = slug + "-card.png";
+    document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(href), 1000);
   }, "image/png");
 }
