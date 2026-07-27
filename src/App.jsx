@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 const ACC = "#6ea4c4";
 const F = "'Helvetica Neue', Helvetica, Arial, sans-serif";
@@ -22,6 +22,27 @@ async function apiPost(body) {
   if (data.error) throw new Error(data.error);
   if (!data.result) throw new Error("Couldn't extract that one. Try a different URL.");
   return data.result;
+}
+
+// Fetch the shared cookbook (newest first). Returns [] on any failure so the
+// UI simply hides the section rather than erroring.
+async function fetchCollection() {
+  try {
+    const res = await fetch("/api/collection");
+    const data = await res.json();
+    return Array.isArray(data.recipes) ? data.recipes : [];
+  } catch { return []; }
+}
+
+// Add a freshly stripped recipe to the shared cookbook. Fire-and-forget:
+// failures (e.g. D1 not yet bound) are swallowed so stripping still works.
+function saveToCollection(recipe, url) {
+  try {
+    fetch("/api/collection", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recipe, url }),
+    }).catch(() => {});
+  } catch { /* ignore */ }
 }
 
 const SECT = (s) => typeof s === "string" && s.startsWith("**") && s.endsWith("**");
@@ -496,12 +517,53 @@ function Detail({ data, url, onClear }) {
   );
 }
 
+// The shared public cookbook — a grid of recipes that got their bullshit
+// stripped. Renders nothing until there's at least one.
+function CookbookGrid({ recipes, onOpen }) {
+  if (!recipes || recipes.length === 0) return null;
+  return (
+    <section style={{ maxWidth: 900, margin: "0 auto", padding: "40px 28px 90px", animation: "fadeUp 0.4s ease" }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 16, marginBottom: 6, paddingBottom: 14, borderBottom: "2px solid #111", flexWrap: "wrap" }}>
+        <h2 style={{ fontFamily: F, fontSize: 22, fontWeight: 700, color: "#111", textTransform: "uppercase", letterSpacing: "-0.02em" }}>
+          The Cookbook<span style={{ color: ACC }}>.</span>
+        </h2>
+        <span style={{ fontFamily: M, fontSize: 8, textTransform: "uppercase", letterSpacing: "0.12em", color: "#bbb" }}>
+          {recipes.length} recipe{recipes.length === 1 ? "" : "s"}, bullshit removed
+        </span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 1, background: "#f0f0f0", border: "1px solid #f0f0f0" }}>
+        {recipes.map((r, i) => (
+          <button key={(r.url || r.slug || "") + i} onClick={() => onOpen(r)}
+            style={{ textAlign: "left", background: "#fff", border: "none", cursor: "pointer", padding: "18px 18px 20px", display: "flex", flexDirection: "column", gap: 10, minHeight: 108, transition: "background 0.15s" }}
+            onMouseEnter={e => e.currentTarget.style.background = "#fafafa"}
+            onMouseLeave={e => e.currentTarget.style.background = "#fff"}>
+            <span style={{ fontFamily: M, fontSize: 8, textTransform: "uppercase", letterSpacing: "0.1em", color: ACC, fontWeight: 500 }}>
+              {r.source || "Recipe"}
+            </span>
+            <span style={{ fontFamily: F, fontSize: 15, fontWeight: 600, color: "#111", lineHeight: 1.25, flex: 1 }}>
+              {r.title}
+            </span>
+            <span style={{ fontFamily: M, fontSize: 8, textTransform: "uppercase", letterSpacing: "0.08em", color: "#ccc", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>{r.cook_time || ""}</span>
+              <span style={{ color: "#ddd" }}>View →</span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export default function App() {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [data, setData] = useState(null);
   const [sourceUrl, setSourceUrl] = useState("");
+  const [collection, setCollection] = useState([]);
+
+  // Load the shared cookbook on first render.
+  useEffect(() => { fetchCollection().then(setCollection); }, []);
 
   const strip = async () => {
     if (!url.trim()) return;
@@ -511,8 +573,18 @@ export default function App() {
     try {
       const result = await apiPost({ action: "extract", url: u });
       setData(result);
+      saveToCollection(result, u);
+      // Optimistically surface it at the top of the cookbook, deduped by URL.
+      setCollection(prev => [{ slug: "", title: result.title, source: result.source, url: u, cook_time: result.cook_time || result.total_time || "", data: result }, ...prev.filter(r => r.url !== u)]);
     } catch (e) { setError(e.message); }
     setLoading(false);
+  };
+
+  const openSaved = (item) => {
+    setData(item.data);
+    setSourceUrl(item.url || "");
+    setError("");
+    if (typeof window !== "undefined") window.scrollTo(0, 0);
   };
 
   const clear = () => { setData(null); setError(""); setUrl(""); setSourceUrl(""); };
@@ -538,9 +610,10 @@ export default function App() {
         </a>
       </header>
 
-      {/* HERO / INPUT - only show when no recipe loaded */}
+      {/* HERO / INPUT + COOKBOOK - only show when no recipe loaded */}
       {!data && (
-        <main style={{ maxWidth: 600, margin: "0 auto", padding: "0 28px", display: "flex", flexDirection: "column", justifyContent: "center", minHeight: "calc(100vh - 200px)" }}>
+      <>
+        <main style={{ maxWidth: 600, margin: "0 auto", padding: "0 28px", display: "flex", flexDirection: "column", justifyContent: "center", minHeight: collection.length ? "auto" : "calc(100vh - 200px)", paddingTop: collection.length ? 40 : 0, paddingBottom: collection.length ? 20 : 0 }}>
           <h1 style={{ fontFamily: F, fontSize: "clamp(36px, 8vw, 56px)", fontWeight: 700, color: "#111", lineHeight: 1, letterSpacing: "-0.04em", textTransform: "uppercase", marginBottom: 8 }}>
             Recipes with<br />No Bullshit<span style={{ color: ACC }}>.</span>
           </h1>
@@ -602,6 +675,10 @@ export default function App() {
             Works with allrecipes, bonappetit, nytcooking, foodnetwork, seriouseats, and basically any recipe page
           </p>
         </main>
+
+        {/* Shared public cookbook */}
+        <CookbookGrid recipes={collection} onOpen={openSaved} />
+      </>
       )}
 
       {/* RECIPE DISPLAY */}
