@@ -1,3 +1,5 @@
+import { cookbookEntry, recipeMetadata } from "../../lib/cookbook.js";
+
 // Cloudflare Pages Function backing the public "Cookbook" — the shared
 // collection of recipes that have had their bullshit stripped.
 //
@@ -34,7 +36,7 @@ export async function onRequestGet(context) {
     const recipes = (results || []).map(r => {
       let data = null;
       try { data = JSON.parse(r.data); } catch { /* skip malformed */ }
-      return { slug: r.slug, title: r.title, source: r.source, url: r.url, cook_time: r.cook_time, created_at: r.created_at, data };
+      return data ? cookbookEntry(data, r.url, { slug: r.slug, created_at: r.created_at }) : { data: null };
     }).filter(r => r.data);
     return json({ recipes }, 200, "public, max-age=30");
   } catch (err) {
@@ -54,6 +56,7 @@ export async function onRequestPost(context) {
     if (!recipe || !recipe.title || !Array.isArray(recipe.ingredients) || !Array.isArray(recipe.steps)) {
       return json({ ok: false, error: "invalid recipe" }, 400);
     }
+    const storedRecipe = { ...recipe, ...recipeMetadata(recipe) };
     const slug = slugify(recipe.title);
     const cook = recipe.cook_time || recipe.total_time || "";
     const now = Date.now();
@@ -63,7 +66,7 @@ export async function onRequestPost(context) {
       "INSERT INTO recipes (slug, title, source, url, cook_time, data, created_at) " +
       "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) " +
       "ON CONFLICT(url) DO UPDATE SET slug=?1, title=?2, source=?3, cook_time=?5, data=?6"
-    ).bind(slug, recipe.title, recipe.source || "", key, cook, JSON.stringify(recipe), now).run();
+    ).bind(slug, recipe.title, recipe.source || "", key, cook, JSON.stringify(storedRecipe), now).run();
     return json({ ok: true, slug });
   } catch (err) {
     return json({ ok: false, error: err.message }, 200);

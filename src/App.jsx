@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { CATEGORIES, cookbookEntry, recipeMetadata } from "../lib/cookbook.js";
 
 const ACC = "#6ea4c4";
 const F = "'Helvetica Neue', Helvetica, Arial, sans-serif";
@@ -513,7 +514,7 @@ function Detail({ data, url, onClear }) {
         </div>
       )}
 
-      <p style={{ marginTop: 28, fontFamily: M, fontSize: 8, color: "#ddd", letterSpacing: "0.04em", wordBreak: "break-all" }}>{url}</p>
+      {url && /^https?:\/\//i.test(url) && <a href={url} target="_blank" rel="noopener noreferrer" style={{ display: "block", marginTop: 28, fontFamily: M, fontSize: 10, color: "#777", letterSpacing: "0.04em", wordBreak: "break-all" }}>Original recipe: {data.source || url} ↗</a>}
     </div>
   );
 }
@@ -521,9 +522,15 @@ function Detail({ data, url, onClear }) {
 // The shared public cookbook — a grid of recipes that got their bullshit
 // stripped. Renders nothing until there's at least one.
 function CookbookGrid({ recipes, onOpen }) {
+  const [category, setCategory] = useState("All");
+  const [tag, setTag] = useState("All");
   if (!recipes || recipes.length === 0) return null;
+  const entries = recipes.map(r => ({ ...r, ...recipeMetadata(r.data) }));
+  const categories = CATEGORIES.filter(c => entries.some(r => r.category === c));
+  const tags = [...new Set(entries.flatMap(r => r.tags))].sort();
+  const filtered = entries.filter(r => (category === "All" || r.category === category) && (tag === "All" || r.tags.includes(tag)));
   return (
-    <section style={{ maxWidth: 900, margin: "0 auto", padding: "40px 28px 90px", animation: "fadeUp 0.4s ease" }}>
+    <section aria-label="Cookbook" style={{ maxWidth: 900, margin: "0 auto", padding: "40px 28px 90px", animation: "fadeUp 0.4s ease" }}>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 16, marginBottom: 6, paddingBottom: 14, borderBottom: "2px solid #111", flexWrap: "wrap" }}>
         <h2 style={{ fontFamily: F, fontSize: 22, fontWeight: 700, color: "#111", textTransform: "uppercase", letterSpacing: "-0.02em" }}>
           The Cookbook<span style={{ color: ACC }}>.</span>
@@ -532,8 +539,25 @@ function CookbookGrid({ recipes, onOpen }) {
           {recipes.length} recipe{recipes.length === 1 ? "" : "s"}, bullshit removed
         </span>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 1, background: "#f0f0f0", border: "1px solid #f0f0f0" }}>
-        {recipes.map((r, i) => (
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", padding: "16px 0" }}>
+        {["All", ...categories].map(c => <button key={c} onClick={() => setCategory(c)} aria-pressed={category === c}
+          style={{ border: "1px solid " + (category === c ? "#111" : "#ddd"), background: category === c ? "#111" : "#fff", color: category === c ? "#fff" : "#555", padding: "9px 12px", fontFamily: F, fontSize: 12, cursor: "pointer" }}>
+          {c} <span style={{ opacity: 0.65 }}>{c === "All" ? entries.length : entries.filter(r => r.category === c).length}</span>
+        </button>)}
+        {tags.length > 0 && <label style={{ fontFamily: F, fontSize: 12, color: "#666", marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+          Tag
+          <select aria-label="Filter cookbook by tag" value={tag} onChange={e => setTag(e.target.value)} style={{ fontFamily: F, fontSize: 12, background: "#fff", border: "1px solid #ddd", padding: 9, color: "#333" }}>
+            <option value="All">All tags</option>
+            {tags.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </label>}
+      </div>
+      <p aria-live="polite" style={{ fontFamily: M, fontSize: 10, color: "#777", marginBottom: 14 }}>
+        Showing {filtered.length} of {entries.length} recipes
+      </p>
+      {filtered.length === 0 && <p style={{ fontFamily: F, color: "#777", padding: "20px 0" }}>No recipes match these filters. Choose another category or tag.</p>}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(220px, 100%), 1fr))", gap: 1, background: "#f0f0f0", border: "1px solid #f0f0f0" }}>
+        {filtered.map((r, i) => (
           <button key={(r.url || r.slug || "") + i} onClick={() => onOpen(r)}
             style={{ textAlign: "left", background: "#fff", border: "none", cursor: "pointer", padding: "18px 18px 20px", display: "flex", flexDirection: "column", gap: 10, minHeight: 108, transition: "background 0.15s" }}
             onMouseEnter={e => e.currentTarget.style.background = "#fafafa"}
@@ -543,6 +567,9 @@ function CookbookGrid({ recipes, onOpen }) {
             </span>
             <span style={{ fontFamily: F, fontSize: 15, fontWeight: 600, color: "#111", lineHeight: 1.25, flex: 1 }}>
               {r.title}
+            </span>
+            <span style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+              {[r.category, ...r.tags].map(label => <span key={label} style={{ fontFamily: F, fontSize: 10, color: "#526774", background: "#eef4f7", padding: "4px 6px" }}>{label}</span>)}
             </span>
             <span style={{ fontFamily: M, fontSize: 8, textTransform: "uppercase", letterSpacing: "0.08em", color: "#ccc", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span>{r.cook_time || ""}</span>
@@ -589,7 +616,7 @@ export default function App() {
       setData(result);
       saveToCollection(result, u);
       // Optimistically surface it at the top of the cookbook, deduped by URL.
-      setCollection(prev => [{ slug: "", title: result.title, source: result.source, url: u, cook_time: result.cook_time || result.total_time || "", data: result }, ...prev.filter(r => r.url !== u)]);
+      setCollection(prev => [cookbookEntry(result, u, { slug: "" }), ...prev.filter(r => u ? r.url !== u : r.title !== result.title)]);
     } catch (e) { setError(e.message); }
     setLoading(false);
   };
