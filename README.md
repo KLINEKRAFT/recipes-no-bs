@@ -12,3 +12,20 @@ Run `npm install`, `npm test`, and `npm run build` to check changes.
 `npm run dev` serves the frontend only; test `/api/*` with Cloudflare Pages
 Functions (for example, `npx wrangler pages dev dist`). The optional shared
 cookbook still requires the `DB` D1 binding and `schema.sql`.
+
+The cookbook stores `category` and `tags` inside each recipe's JSON, so existing
+D1 databases need no schema migration. Old and newly stripped recipes receive a
+course category automatically; explicit categories are preserved. The grid can
+be filtered by course and tag.
+
+`data/thanksgiving-2026.json` contains 20 complete recipe cards fetched from seven
+publishers, with source URLs and a Thanksgiving tag. After connecting `DB` and
+deploying, run:
+
+```sh
+node scripts/seed-thanksgiving.mjs https://recipes.colinkline.com
+```
+
+The seed command updates entries by source URL and verifies all 20 are present;
+it can be rerun without creating duplicates. In environments with an HTTPS proxy,
+use `NODE_USE_ENV_PROXY=1` on a supported Node version.
