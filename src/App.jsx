@@ -20,6 +20,7 @@ async function apiPost(body) {
   try { data = JSON.parse(text); }
   catch { throw new Error("Something went wrong. Try again."); }
   if (data.error) throw new Error(data.error);
+  if (!res.ok) throw new Error("The recipe service is unavailable. Please try again.");
   if (!data.result) throw new Error("Couldn't extract that one. Try a different URL.");
   return data.result;
 }
@@ -556,6 +557,8 @@ function CookbookGrid({ recipes, onOpen }) {
 
 export default function App() {
   const [url, setUrl] = useState("");
+  const [inputMode, setInputMode] = useState("url");
+  const [recipeText, setRecipeText] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [data, setData] = useState(null);
@@ -566,12 +569,23 @@ export default function App() {
   useEffect(() => { fetchCollection().then(setCollection); }, []);
 
   const strip = async () => {
-    if (!url.trim()) return;
+    if (loading || !(inputMode === "text" ? recipeText.trim() : url.trim())) return;
     setLoading(true); setError(""); setData(null);
-    const u = url.trim();
+    let u = "";
+    if (inputMode === "url") {
+      try {
+        const parsed = new URL(url.trim());
+        if (!["http:", "https:"].includes(parsed.protocol)) throw new Error();
+        u = parsed.href;
+      } catch {
+        setError("Enter a recipe URL starting with https://, or choose Paste recipe text.");
+        setLoading(false);
+        return;
+      }
+    }
     setSourceUrl(u);
     try {
-      const result = await apiPost({ action: "extract", url: u });
+      const result = await apiPost({ action: "extract", url: u, ...(inputMode === "text" ? { text: recipeText.trim() } : {}) });
       setData(result);
       saveToCollection(result, u);
       // Optimistically surface it at the top of the cookbook, deduped by URL.
@@ -587,7 +601,7 @@ export default function App() {
     if (typeof window !== "undefined") window.scrollTo(0, 0);
   };
 
-  const clear = () => { setData(null); setError(""); setUrl(""); setSourceUrl(""); };
+  const clear = () => { setData(null); setError(""); setUrl(""); setRecipeText(""); setSourceUrl(""); };
 
   return (
     <div style={{ minHeight: "100vh", background: "#fff", color: "#111" }}>
@@ -622,29 +636,48 @@ export default function App() {
             Paste any recipe URL. We strip out the life story, the ads, and the 47 paragraphs about someone's grandmother. You get ingredients and steps. That's it.
           </p>
 
+          <div style={{ display: "flex", gap: 20, marginBottom: 12 }}>
+            {[["url", "Recipe URL"], ["text", "Paste recipe text"]].map(([mode, label]) => (
+              <button key={mode} onClick={() => { setInputMode(mode); setError(""); }} disabled={loading}
+                aria-pressed={inputMode === mode}
+                style={{ fontFamily: F, fontSize: 12, padding: "8px 0", border: 0, borderBottom: inputMode === mode ? "2px solid #111" : "2px solid transparent", background: "transparent", color: inputMode === mode ? "#111" : "#777", cursor: "pointer" }}>
+                {label}
+              </button>
+            ))}
+          </div>
+          {inputMode === "text" && <p style={{ fontFamily: F, fontSize: 13, color: "#777", marginBottom: 12 }}>
+            If a site blocks the link, copy its recipe title, ingredients, and instructions here.
+          </p>}
           {/* Input */}
           <div style={{ display: "flex", gap: 0, marginBottom: 16 }}>
-            <input
+            {inputMode === "text" ? <textarea
+              aria-label="Recipe text"
+              value={recipeText} onChange={e => setRecipeText(e.target.value)}
+              placeholder="Paste the title, ingredients, and steps…" maxLength={50000} disabled={loading}
+              style={{ flex: 1, minWidth: 0, minHeight: 180, resize: "vertical", border: "2px solid #111", padding: 14, fontFamily: F, fontSize: 15 }}
+            /> : <input
+              aria-label="Recipe URL"
+              type="url"
               value={url}
               onChange={e => setUrl(e.target.value)}
               onKeyDown={e => e.key === "Enter" && !loading && strip()}
               placeholder="https://allrecipes.com/recipe/..."
               disabled={loading}
               style={{
-                flex: 1, border: "2px solid #111", borderRight: "none",
+                flex: 1, minWidth: 0, border: "2px solid #111", borderRight: "none",
                 padding: "14px 16px", fontFamily: F, fontSize: 15, fontWeight: 300,
                 color: "#111", outline: "none", background: "transparent",
               }}
-            />
+            />}
             <button
               onClick={strip}
-              disabled={loading || !url.trim()}
+              disabled={loading || !(inputMode === "text" ? recipeText.trim() : url.trim())}
               style={{
                 background: "#111", color: "#fff", border: "2px solid #111",
                 padding: "14px 24px", fontFamily: F, fontSize: 12, fontWeight: 700,
                 textTransform: "uppercase", letterSpacing: "0.08em",
-                cursor: loading || !url.trim() ? "default" : "pointer",
-                opacity: loading || !url.trim() ? 0.4 : 1,
+                cursor: loading || !(inputMode === "text" ? recipeText.trim() : url.trim()) ? "default" : "pointer",
+                opacity: loading || !(inputMode === "text" ? recipeText.trim() : url.trim()) ? 0.4 : 1,
                 transition: "opacity 0.2s",
                 whiteSpace: "nowrap",
               }}
@@ -667,12 +700,12 @@ export default function App() {
 
           {/* Error */}
           {error && (
-            <p style={{ fontFamily: M, fontSize: 11, color: "#c44", marginTop: 12 }}>{error}</p>
+            <p role="alert" style={{ fontFamily: M, fontSize: 11, color: "#c44", marginTop: 12 }}>{error}</p>
           )}
 
           {/* Footer hint */}
           <p style={{ fontFamily: M, fontSize: 8, color: "#ddd", textTransform: "uppercase", letterSpacing: "0.08em", marginTop: 48 }}>
-            Works with allrecipes, bonappetit, nytcooking, foodnetwork, seriouseats, and basically any recipe page
+            Some sites block automated access. If a link fails, use Paste recipe text.
           </p>
         </main>
 
