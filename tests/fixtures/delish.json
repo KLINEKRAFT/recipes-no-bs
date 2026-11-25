@@ -1,0 +1,31 @@
+{
+  "@type": "Recipe",
+  "name": "Classic Deviled Eggs",
+  "recipeYield": "12 serving(s)",
+  "prepTime": "PT10M",
+  "cookTime": "PT0S",
+  "totalTime": "PT25M",
+  "recipeIngredient": [
+    "6 large eggs",
+    "1/4 c. mayonnaise",
+    "1 tsp. Dijon mustard",
+    "1 tsp. hot sauce",
+    "Kosher salt",
+    "Freshly ground black pepper",
+    "Sliced chives and smoked paprika, for serving"
+  ],
+  "recipeInstructions": [
+    {
+      "@type": "HowToStep",
+      "text": "Bring a large pot of water (about 8 c. water) to a boil. Using tongs or a slotted spoon, gently lower each egg into water. Return to a boil, cover, reduce heat to medium-low, and cook 12 minutes. About 3 minutes before eggs are cooked, fill a large bowl with about 2 c. ice and about 3 c. water. Transfer eggs to ice bath. Let sit about 30 seconds. Drain, rinse eggs under cold water, and peel. "
+    },
+    {
+      "@type": "HowToStep",
+      "text": "Halve eggs lengthwise and scoop out yolks into a medium bowl. Add mayonnaise, mustard, and hot sauce to bowl, then mash yolks with the back of a fork and stir until mixture is smooth; season with salt and pepper. "
+    },
+    {
+      "@type": "HowToStep",
+      "text": "Arrange egg whites on a platter. Using a piping bag fitted with a star tip (or a resealable bag with a small corner snipped off), fill egg whites with egg yolk mixture. Top with chives and paprika."
+    }
+  ]
+}
